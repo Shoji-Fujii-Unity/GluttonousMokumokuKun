@@ -120,12 +120,12 @@ function saveHigh(){
 }
 
 /* ================= 基本設定 ================= */
-const GW=15, MAZE_H=23, HOUSE_H=3, GH=MAZE_H+HOUSE_H;
-const CX0=5, CX1=9;
-const HOUSE_SPOTS=[[7,1],[6,1],[8,1],[7,2]];
-const EXIT_POS=[7,HOUSE_H+1];   // ★ 出口は1つ(中央)のみ
-const FRUIT_POS=[7,HOUSE_H+11];
-const SPAWN_INVINCIBLE=1.5;     // ★ 復活ゴーストの無敵時間(秒)
+const GW=15, MAZE_H=23, HOUSE_H=3, GH=MAZE_H+HOUSE_H; // 迷路15x23 + 上部ゴースト部屋3行
+const CX0=5, CX1=9;                                    // ゴースト部屋の列範囲(封鎖)
+const HOUSE_SPOTS=[[7,1],[6,1],[8,1],[7,2]];          // 部屋内の待機位置
+const EXIT_POS=[7,HOUSE_H+1];                          // ★ 出口は中央のみ1つ
+const FRUIT_POS=[7,HOUSE_H+11];                        // フルーツ出現位置(迷路中央)
+const SPAWN_INVINCIBLE=1.5;                            // 復活ゴーストの無敵時間(秒・半透明表示)
 
 const canvas=document.getElementById('cv'),ctx=canvas.getContext('2d');
 const scoreEl=document.getElementById('score'),stageEl=document.getElementById('stage'),livesEl=document.getElementById('lives');
@@ -142,14 +142,12 @@ let grid,dots,totalDots,powers,specials,eaten,score,lives,stage,stageReached,sta
 let pac,ghosts,fruit,particles,floaters,effects,combo,powerCharges,dotStreak,pacPuff,releaseTimer;
 let powerCount=0;   // ★ パワードットを食べた回数(エポック管理用)
 
-function startStage(){genMaze();resetPositions();frightT=0;effects={speed:0,shield:0,repel:0};combo=0;powerCharges=0;powerCount=0;}
-
 const DIRS=[[1,0],[-1,0],[0,1],[0,-1]];
 function open(x,y){return x>=0&&y>=0&&x<GW&&y<GH&&grid[y][x]===0;}
 const THEMES=['#2323d8','#7a2bd6','#1e9e50','#b83280','#0f8fa8','#c46a1b'];
 const theme=()=>THEMES[(stage-1)%THEMES.length];
 
-/* ================= 音楽 ================= */
+/* ================= 音楽(チップチューン・通常/怯え) ================= */
 let AC=null,audioStarted=false,musicOn=true,sfxAlt=false,mstep=0,nextT=0,gBGM,gSFX;
 const MF=s=>440*Math.pow(2,s/12);
 const PAT={
@@ -256,18 +254,18 @@ function resetPositions(){
   pac=makeEnt(1,GH-2,[1,0],DIFF[diff].pac);pac.want=[1,0];pac.isPac=true;
   const cols=['#c46bff','#ff6bd6','#4bb8ff','#ffa94b'];
   ghosts=HOUSE_SPOTS.map((p,i)=>{const g=makeEnt(p[0],p[1],[0,0],5);
-    g.color=cols[i];g.idx=i;g.inHouse=true;g.ghosting=0;g.exitT=.3+i*.4;g.spawnT=0;return g;});
+    g.color=cols[i];g.idx=i;g.inHouse=true;g.ghosting=0;g.exitT=.3+i*.4;g.spawnT=0;g.protected=false;return g;});
   releaseTimer=1.2;
   fruit={active:false,done:false,timer:0};
   particles=[];floaters=[];pacPuff=0;dotStreak=0;
 }
-function startStage(){genMaze();resetPositions();frightT=0;effects={speed:0,shield:0,repel:0};combo=0;powerCharges=0;}
+function startStage(){genMaze();resetPositions();frightT=0;effects={speed:0,shield:0,repel:0};combo=0;powerCharges=0;powerCount=0;}
 function fullReset(d){diff=d||'normal';score=0;lives=DIFF[diff].lives;stage=1;stageReached=1;startStage();state='ready';updateHud();}
 
 function choose(e){
   if(e.isPac){
     const w=e.want||[0,0];
-    if((w[0]||w[1])&&open(e.gx+w[0],e.gy+w[1]))return w;
+    if((w[0]||w[1])&&open(e.gx+w[0],e.gy+w[1]))return w;   // 上下移動バグ修正済み
     if(open(e.gx+e.dir[0],e.gy+e.dir[1]))return e.dir;
     return null;
   }
@@ -309,15 +307,15 @@ function eatAt(x,y){
     dots.delete(k);eaten++;score+=10;dotStreak++;pacPuff=1;
     addParticle(x*TILE+TILE/2,y*TILE+TILE/2);
     if(powers.has(k)){
-      powerCount++;   // ★ エポックを上げる(新しいパワードット)
+      powerCount++;   // ★ エポック更新(必ずforEachより前)
       if(frightT>0){powerCharges=Math.min(powerCharges+1,3);frightT=Math.min(12,frightT+2);}
       else{powerCharges=0;frightT=DIFF[diff].fright;}
       ghosts.forEach(g=>{
-        if(!g.inHouse&&!g.ghosting){
-          g.fright=true;
-          g.protected=false;   // ★ 迷宮にいるゴーストの保護を解除(必ず青くなる)
-          reverseGhost(g);
-        }
+        if(g.ghosting>0) return;   // 部屋待機/捕獲演出中はタイムラグ無し
+        g.fright=true;
+        g.protected=false;         // ★ 復活済み・部屋待機中のゴーストも保護解除
+        g.protectEpoch=powerCount; // ★ 新エポックで保護は再設定されないよう固定
+        if(!g.inHouse) reverseGhost(g);
       });
       sfx.power();buzz([30,40,30]);
     }else sfx.dot();
@@ -330,20 +328,18 @@ function reverseGhost(g){const a=g.gx,b=g.gy;g.gx=g.tx;g.gy=g.ty;g.tx=a;g.ty=b;g
 // 捕獲されたゴーストは専用部屋へ帰還
 function resetGhost(g){
   g.inHouse=true;g.ghosting=1.2;g.exitT=.6;g.fright=false;
-  // ★ 怯えモード中に帰還 → 「新たなパワードット」まで保護状態
-  g.protected=(frightT>0);
-  g.protectEpoch=powerCount;   // 部屋に入った時点の「食べられた回数」を記録
+  g.protected=(frightT>0);      // ★ 怯えモード中に帰還 → 保護(新たなパワードットまで倒せない)
+  g.protectEpoch=powerCount;    // ★ 部屋に入った時点の「食べられた回数」を記録
   g.gx=g.tx=7;g.gy=g.ty=1;g.t=0;
 }
 
 function checkCollisions(){
   const [px,py]=entPos(pac);
   for(const g of ghosts){
-    if(g.inHouse||g.ghosting>0||g.spawnT>0)continue;
+    if(g.inHouse||g.ghosting>0||g.spawnT>0)continue; // 部屋/捕獲演出/復活無敵中は判定なし
     const [gx,gy]=entPos(g);
     if(Math.hypot(px-gx,py-gy)<TILE*.6){
-      // ★ 保護中のゴーストは怯えていなくても絶対に倒せない
-      if(frightT>0&&g.fright&&!g.protected){
+      if(frightT>0&&g.fright&&!g.protected){   // ★ 保護中のゴーストは倒せない
         combo++;
         const pts=200*(2**(combo-1));
         score+=pts;
@@ -377,23 +373,20 @@ function update(dt){
       if(g.ghosting>0){g.ghosting-=dt;continue;}
       if(releaseTimer>0)continue;
       g.exitT-=dt;
-      if(g.exitT<=0){ // 全員が同じ出口(EXIT_POS)から順に出場
+      if(g.exitT<=0){ // ★ 全員が同じ出口(EXIT_POS)から順に出場
         g.gx=g.tx=EXIT_POS[0];g.gy=g.ty=EXIT_POS[1];g.t=0;
         g.inHouse=false;g.dir=randOpenDir(EXIT_POS[0],EXIT_POS[1]);
-        g.spawnT=SPAWN_INVINCIBLE;
-        // ★ 出場時の状態を「エポック」で確定させる(タイミングに依存しない)
+        g.spawnT=SPAWN_INVINCIBLE; // 復活直後は無敵(半透明表示)
         if(g.protected&&powerCount===g.protectEpoch){
-          // 部屋に入った後にパワードットが食べられていない → 通常・倒せない
-          g.fright=false;
+          g.fright=false;              // 新パワードットなし → 通常・倒せない
         }else{
-          // 部屋にいる間に新しいパワード_dot_が食べられた → 怯えた状態で出場
-          g.protected=false;
+          g.protected=false;           // 部屋にいる間に食べられた → 怯えて出場
           g.fright=frightT>0;
         }
       }
       continue;
     }
-    g.spawnT=Math.max(0,g.spawnT-dt); // ★ 無敵タイマー減算
+    g.spawnT=Math.max(0,g.spawnT-dt);
     g.speed=(g.fright&&frightT>0)?3.2:gs;
     moveEnt(g,dt);
   }
@@ -444,7 +437,7 @@ function drawEnemy(g){
   const [x,y]=entPos(g),r=TILE*.4;
   let col=g.color;
   if(g.fright&&frightT>0&&!g.inHouse)col=(frightT<2&&Math.floor(animT*8)%2)?'#e8e8ff':'#3d5bff';
-  // ★ 復活無敵中は「点滅」ではなく「半透明」で表示
+  // ★ 復活無敵中は「半透明」で表示
   if(g.spawnT>0)ctx.globalAlpha=.45;
   ctx.fillStyle=col;
   const rot=animT*1.5;
@@ -456,7 +449,7 @@ function drawEnemy(g){
     ctx.beginPath();ctx.moveTo(bx,by);ctx.lineTo(tx,ty);ctx.lineTo(px2,py2);ctx.closePath();ctx.fill();
   }
   circle(x,y,r);
-  if(g.ghosting>0){
+  if(g.ghosting>0){ // ×目(部屋での待機中)
     ctx.strokeStyle='#fff';ctx.lineWidth=2;
     for(const sx of[-.35,.35]){
       ctx.beginPath();
